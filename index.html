@@ -56,6 +56,11 @@
     let commandoCharacteristic;
     let statusCharacteristic;
 
+    // Reserve-controle: elke seconde de status uitlezen, voor het geval een notificatie niet aankomt
+    let pollTimer = null;
+    let pollBezig = false;
+    let laatsteStatus = '';
+
     // Knoppen koppelen aan functies
     connectButton.addEventListener('click', connectToDevice);
     disconnectButton.addEventListener('click', disconnectDevice);
@@ -112,6 +117,7 @@
       .then(value => {
         toonStatus(new TextDecoder().decode(value));
         bleState.innerHTML = 'Verbonden met ' + bleDevice.name;
+        startPolling();
       })
       .catch(error => console.log('Fout bij verbinden: ', error));
     }
@@ -140,7 +146,36 @@
     }
 
     // Status en tijdstip op het scherm bijwerken
+    // Elke seconde de status lezen. Alleen als de tekst veranderd is, werken we het scherm bij.
+    function startPolling() {
+      stopPolling();
+      pollTimer = setInterval(() => {
+        if (pollBezig || !statusCharacteristic || !bleServer || !bleServer.connected) {
+          return;
+        }
+        pollBezig = true;
+        statusCharacteristic.readValue()
+          .then(value => {
+            const tekst = new TextDecoder().decode(value);
+            if (tekst !== laatsteStatus) {
+              toonStatus(tekst);
+            }
+          })
+          .catch(error => console.log('Fout bij status lezen: ', error))
+          .finally(() => { pollBezig = false; });
+      }, 1000);
+    }
+
+    function stopPolling() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      pollBezig = false;
+    }
+
     function toonStatus(tekst) {
+      laatsteStatus = tekst;
       statusWaarde.innerHTML = tekst;
       timestampContainer.innerHTML = new Date().toLocaleTimeString();
     }
@@ -148,6 +183,8 @@
     // Verbinding verbroken door de ESP32 of door de gebruiker
     function onDisconnected(event) {
       console.log('Verbinding verbroken:', event.target.name);
+      stopPolling();
+      laatsteStatus = '';
       bleState.innerHTML = 'Niet verbonden';
       statusWaarde.innerHTML = '-';
     }
