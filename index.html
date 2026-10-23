@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pakketbox</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 420px; margin: 20px auto; padding: 0 16px; }
+    button { font-size: 18px; padding: 14px; margin: 6px 0; width: 100%; }
+    .rij { margin: 8px 0; }
+  </style>
+</head>
+<body>
+  <h1>Slimme pakketbox</h1>
+
+  <div class="rij">Verbinding: <strong id="bleState">Niet verbonden</strong></div>
+  <button id="connectButton">Verbind met Pakketbox</button>
+  <button id="disconnectButton">Verbreek verbinding</button>
+
+  <hr>
+
+  <button id="openButton">Open pakketbox</button>
+  <button id="closeButton">Sluit pakketbox</button>
+
+  <hr>
+
+  <div class="rij">Status: <strong id="statusWaarde">-</strong></div>
+  <div class="rij">Laatste update: <span id="timestamp">-</span></div>
+  <div class="rij">Laatste commando verstuurd: <span id="laatsteCommando">-</span></div>
+
+  <script>
+    // UUID's en naam: moeten exact gelijk zijn aan config.h op de ESP32 (kleine letters).
+    const deviceName = 'pakketboxTT';
+    const bleService = '7f3b9a10-4c2e-4d6a-9b1f-3a5e8c2d1f40';
+    const commandoUUID = '7f3b9a11-4c2e-4d6a-9b1f-3a5e8c2d1f40';
+    const statusUUID = '7f3b9a12-4c2e-4d6a-9b1f-3a5e8c2d1f40';
+
+    // Commando's: zelfde tekst als BLE_CMD_OPEN en BLE_CMD_DICHT in config.h
+    const CMD_OPEN = '1';
+    const CMD_DICHT = '0';
+
+    // HTML-elementen
+    const connectButton = document.getElementById('connectButton');
+    const disconnectButton = document.getElementById('disconnectButton');
+    const openButton = document.getElementById('openButton');
+    const closeButton = document.getElementById('closeButton');
+    const bleState = document.getElementById('bleState');
+    const statusWaarde = document.getElementById('statusWaarde');
+    const timestampContainer = document.getElementById('timestamp');
+    const laatsteCommando = document.getElementById('laatsteCommando');
+
+    // BLE-objecten
+    let bleDevice;
+    let bleServer;
+    let bleServiceFound;
+    let commandoCharacteristic;
+    let statusCharacteristic;
+
+    // Knoppen koppelen aan functies
+    connectButton.addEventListener('click', connectToDevice);
+    disconnectButton.addEventListener('click', disconnectDevice);
+    openButton.addEventListener('click', () => writeOnCharacteristic(CMD_OPEN));
+    closeButton.addEventListener('click', () => writeOnCharacteristic(CMD_DICHT));
+
+    // Ondersteunt deze browser Web Bluetooth?
+    function isWebBluetoothEnabled() {
+      if (!navigator.bluetooth) {
+        console.log('Web Bluetooth wordt niet ondersteund door deze browser.');
+        bleState.innerHTML = 'Web Bluetooth niet ondersteund in deze browser';
+        return false;
+      }
+      return true;
+    }
+
+    // Verbinding leggen, service en characteristics ophalen, notificaties starten
+    function connectToDevice() {
+      if (!isWebBluetoothEnabled()) {
+        return;
+      }
+
+      navigator.bluetooth.requestDevice({
+        filters: [{ name: deviceName }],
+        optionalServices: [bleService]
+      })
+      .then(device => {
+        bleDevice = device;
+        bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+        return bleDevice.gatt.connect();
+      })
+      .then(gattServer => {
+        bleServer = gattServer;
+        return bleServer.getPrimaryService(bleService);
+      })
+      .then(service => {
+        bleServiceFound = service;
+        return service.getCharacteristic(commandoUUID);
+      })
+      .then(characteristic => {
+        commandoCharacteristic = characteristic;
+        return bleServiceFound.getCharacteristic(statusUUID);
+      })
+      .then(characteristic => {
+        statusCharacteristic = characteristic;
+        // Event koppelen aan de functie die inkomende data verwerkt
+        statusCharacteristic.addEventListener('characteristicvaluechanged', handleCharacteristicChange);
+        return statusCharacteristic.startNotifications();
+      })
+      .then(() => {
+        // Huidige status meteen ophalen, anders blijft het scherm leeg tot de eerste wijziging
+        return statusCharacteristic.readValue();
+      })
+      .then(value => {
+        toonStatus(new TextDecoder().decode(value));
+        bleState.innerHTML = 'Verbonden met ' + bleDevice.name;
+      })
+      .catch(error => console.log('Fout bij verbinden: ', error));
+    }
+
+    // Commando naar de ESP32 schrijven en het scherm bijwerken
+    function writeOnCharacteristic(value) {
+      if (bleServer && bleServer.connected && commandoCharacteristic) {
+        const data = new TextEncoder().encode(value); // tekst omzetten naar bytes
+        commandoCharacteristic.writeValue(data)
+        .then(() => {
+          laatsteCommando.innerHTML = (value === CMD_OPEN) ? 'Open' : 'Sluit';
+          console.log('Commando geschreven:', value);
+        })
+        .catch(error => console.error('Fout bij schrijven: ', error));
+      } else {
+        console.error('Niet verbonden met de Pakketbox.');
+        bleState.innerHTML = 'Niet verbonden: eerst verbinden';
+      }
+    }
+
+    // Inkomende notificatie van de ESP32: bytes omzetten naar tekst en tonen
+    function handleCharacteristicChange(event) {
+      const value = new TextDecoder().decode(event.target.value);
+      console.log('Status ontvangen:', value);
+      toonStatus(value);
+    }
+
+    // Status en tijdstip op het scherm bijwerken
+    function toonStatus(tekst) {
+      statusWaarde.innerHTML = tekst;
+      timestampContainer.innerHTML = new Date().toLocaleTimeString();
+    }
+
+    // Verbinding verbroken door de ESP32 of door de gebruiker
+    function onDisconnected(event) {
+      console.log('Verbinding verbroken:', event.target.name);
+      bleState.innerHTML = 'Niet verbonden';
+      statusWaarde.innerHTML = '-';
+    }
+
+    function disconnectDevice() {
+      if (bleDevice && bleDevice.gatt.connected) {
+        bleDevice.gatt.disconnect();
+      } else {
+        console.log('Er is geen verbinding om te verbreken.');
+      }
+    }
+  </script>
+</body>
+</html>
